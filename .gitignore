@@ -1,3 +1,219 @@
+
+import os
+import sys
+import time
+import shutil
+import tarfile
+from os.path import isfile, isdir, join
+from datetime import datetime
+import logging
+
+def check_date(file_name):
+    """ Function to check that a file is old """
+
+    # Get timestamp from file name
+    datetime_str_arr = str(file_name).split("_")
+    datetime_str = str(datetime_str_arr[1].split(".")[0])
+
+    f_year = int(datetime_str[0:4])     # year
+    f_month = int(datetime_str[4:6])    # month
+    f_date = int(datetime_str[6:8])     # date
+
+    # Get current date
+    now_date = datetime.now().date()
+
+    n_year = now_date.year
+    n_month = now_date.month
+    n_day = now_date.day
+
+    if (f_year > n_year) or ((f_month >= n_month) and (f_year == n_year)):
+        return False
+
+    # Get Staging directory name     	
+    if f_month < 12:
+        if f_month < 9:
+            f_month = '0' + str(f_month + 1)
+        else:
+            f_month = str(f_month + 1)
+
+        staging_subdir = '%s%d%s%s' % ('data_prior_to_', f_year, f_month, '01')
+    else:
+        staging_subdir = '%s%d%s' % ('data_prior_to_', f_year + 1, '0101')
+
+    source_dir = join(staging_path, staging_subdir)
+
+    # Create a data directory in Staging directory
+    try:
+        os.stat(source_dir)
+    except:
+        os.mkdir(source_dir)
+
+    return source_dir
+
+
+def validate_file(file_name, flag):
+    """ Function to validate file format """
+
+    dir_array = str(file_name).split("_")
+
+    # Check about files of data/Spr directory 
+    if flag == 1:
+        if dir_array.__len__() == 2:
+            if dir_array[1].split(".")[0].isdigit():
+                if len(dir_array[1].split(".")[0]) == 8:
+                    return True
+
+    # Check about directories of Staging directory
+    if flag == 2:
+        if dir_array.__len__() == 4:
+            if dir_array[3].isdigit():
+                if len(dir_array[3]) == 8:
+                    return True
+
+    # Check about compress file type
+    if flag == 3:
+        if dir_array.__len__() == 4:
+            date_ext = dir_array[3].split(".")
+            if date_ext[0].isdigit():
+                if len(date_ext[0]) == 8:
+                    if (date_ext[1] == 'tar' and date_ext[2] == 'gz'):
+                        return True
+
+    return False 
+
+
+def move_staging(data_path, staging_path):
+    """ Function to move old files to Staging directory """
+
+    print "\nMoving old files from Spr directory to Staging directory..."
+
+    # Get all files of the Spr directory
+    dirs = os.listdir(data_path)
+
+    # Check data each file and move
+    for sub_dir in dirs:
+        if isfile(join(data_path, sub_dir)):
+            continue
+        
+        # Get files from sub directory
+        sub_files = os.listdir(join(data_path, sub_dir))
+        for f in sub_files:
+            if validate_file(f, 1) == True:
+                staging_dir = check_date(f)	    
+                if staging_dir == False:
+                    continue
+    
+                shutil.move(join(data_path, sub_dir, f), join(staging_dir, f))    
+
+
+def prepare_compression(staging_path, archiving_path):
+    """ function to compress as Gzip file and  move into Archiving directory """
+
+    print "Compressing gzip files and move into Archiving directory..."
+
+    # Get all files of Staging directory
+    files = os.listdir(staging_path)
+
+    for f in files:
+        if isfile(join(staging_path, f)):
+            continue
+        
+        if not validate_file(f, 2):
+            continue
+
+        # Compress as Gzip file and move to Archiving directory
+        gzpath = join(archiving_path, f) + '.tar.gz'
+        f_out = tarfile.open(gzpath, 'w:gz')
+        f_out.add(join(staging_path, f), arcname = f)
+        f_out.close()
+
+        # Remove directory from Staging
+        shutil.rmtree(join(staging_path, f))
+
+
+def save_remote_server(archiving_path, server_url):
+    """ Function to save in remote archiving server """
+
+    print "Saving compress files in Remote Archiving Server..."
+
+    # Get archiving data of Archiving directory
+    files = os.listdir(archiving_path)
+    is_new = True
+
+    # Save compressed files in server
+    try:
+        for f in files:
+            if not validate_file(f, 3):
+                continue
+
+            shutil.copy(join(archiving_path, f), server_url)
+
+            # add log information
+            logging_file(f, join(archiving_path, f), server_url, is_new)
+            is_new = False
+            os.remove(join(archiving_path, f))
+
+    except:
+        print "Error: Remote Archiving Server Url"
+        exit()
+
+
+def logging_file(comp_file, comp_path, server_url, is_new):
+    """ Function to save logging information """
+
+    # Logging filename
+    log_filename = "history.log"
+
+    # Open log file
+    try:
+        f = open(log_filename, 'a')
+    except IOError:
+        os.stat(log_filename)
+
+    # Write head info
+    if is_new == True:
+        print >> f, '\n-------------------- ' + str(datetime.now().date()) + ' --------------------\n'
+        print >> f, 'Compressed files is saved in remote archiving server: ' + server_url
+
+    print >> f, '\n' + str(comp_file) + ':'
+
+    # Write archiving data filename
+    gzfile = tarfile.open(comp_path)
+    f_list = gzfile.getnames()
+
+    for f_log in f_list:
+        tmp_arr = f_log.split('/')
+        if len(tmp_arr) == 1:
+            continue
+        print >> f, '\t' + str(tmp_arr[len(tmp_arr) - 1])
+
+    logging.shutdown()
+
+
+if __name__ == "__main__":
+
+    # Source directory path
+    data_path = "data"
+    staging_path = "Staging"
+    archiving_path = "Archiving"
+
+    server_url = raw_input("Input remote archiving server url: \n")
+    if not os.path.exists(server_url):
+        print "Error: Remote Archiving Server Url. Try again!"
+        exit()
+
+    # Move files from data/spr to staging directory
+    move_staging(data_path, staging_path)
+
+    # Compress and move gzip files from staging to archiving
+    prepare_compression(staging_path, archiving_path)
+
+    # Save remote archiving server
+    save_remote_server(archiving_path, server_url)
+
+    print "\nComplete successfully!"
+
+
 # Xcode
 #
 # gitignore contributors: remember to update Global/Xcode.gitignore, Objective-C.gitignore & Swift.gitignore
@@ -46,7 +262,7 @@ Carthage/Build
 #
 # It is recommended to not store the screenshots in the git repo. Instead, use fastlane to re-generate the 
 # screenshots whenever they are needed.
-# For more information about the recommended setup visit:
+# For more information about the recommended setup visit
 # https://github.com/fastlane/fastlane/blob/master/fastlane/docs/Gitignore.md
 
 fastlane/report.xml
